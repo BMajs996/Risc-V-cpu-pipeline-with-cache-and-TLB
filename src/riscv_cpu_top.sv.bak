@@ -1,0 +1,69 @@
+module riscv_cpu_top #(parameter XLEN=32, VA_W=32, PA_W=32)(
+    input  logic clk, rst_n,
+    input  logic [XLEN-1:0] mem_rdata,
+    input  logic mem_ready,
+    output logic [PA_W-1:0] mem_addr,
+    output logic [XLEN-1:0] mem_wdata,
+    output logic mem_req, mem_we
+);
+    logic [VA_W-1:0] pc_if, pc_id;
+    logic [31:0] inst_fetch, inst_id;
+    logic [4:0] rs1_id, rs2_id, rd_ex, rd_mem, rd_wb;
+    logic mem_read_ex, reg_write, mem_write, branch, jump, m_instr, a_instr;
+    logic [31:0] imm_id, rs1_raw, rs2_raw, rs1_ex, rs2_ex, alu_out_ex, mem_out_ex, wb_out, wb_data;
+    logic [3:0] alu_op_id; logic [1:0] mem_op, fwd_rs1, fwd_rs2;
+    logic stall_if, stall_id, flush_ex, flush_mem, tlb_miss_i, cache_miss_i, tlb_miss_d, cache_miss_d;
+    logic branch_mispredict, exception_taken, m_busy, m_done, a_busy, a_done;
+    logic [31:0] m_result, a_result;
+    logic itlb_hit, icache_hit, dtlb_hit, dcache_hit;
+    logic [PA_W-1:0] paddr_i, paddr_d;
+    logic [31:0] icache_rdata, dcache_rdata;
+    logic itlb_refill_vld, icache_refill_vld, dtlb_refill_vld, dcache_refill_vld;
+    logic [31:0] icache_refill_data, dcache_refill_data;
+
+    assign pc_id = pc_if + 4;
+    logic en_if_id, en_id_ex;
+    assign en_if_id = !stall_if; assign en_id_ex = !stall_id;
+    always_ff @(posedge clk or negedge rst_n) begin
+        if (!rst_n) pc_if <= 32'h80000000;
+        else if (en_if_id) pc_if <= pc_if + 4;
+    end
+    pipeline_reg #(.WIDTH(32)) if_id_pc (.clk, .rst_n, .en(en_if_id), .flush(1'b0), .d(pc_if), .q(pc_id));
+    pipeline_reg #(.WIDTH(32)) if_id_inst (.clk, .rst_n, .en(en_if_id), .flush(1'b0), .d(inst_fetch), .q(inst_id));
+    tlb #(.VA_W(VA_W), .PA_W(PA_W)) itlb (.clk, .rst_n, .req(1'b1), .vaddr(pc_if), .paddr(paddr_i), .hit(itlb_hit), .refill_valid(itlb_refill_vld));
+    assign tlb_miss_i = ~itlb_hit;
+    cache #(.ADDR_W(PA_W), .DATA_W(32)) icache (.clk, .rst_n, .req(1'b1), .wr_en(1'b0), .addr(paddr_i), .rd_data(inst_fetch), .hit(icache_hit), .refill_valid(icache_refill_vld));
+    assign cache_miss_i = ~icache_hit;
+    decoder dec (.inst(inst_id), .rs1(rs1_id), .rs2(rs2_id), .rd(rd_ex), .imm(imm_id),
+                 .reg_write, .mem_read(mem_read_ex), .mem_write, .branch, .jump,
+                 .alu_op(alu_op_id), .mem_op, .m_instr, .a_instr);
+    regfile rf (.clk, .rst_n, .rs1(rs1_id), .rs2(rs2_id), .rd_wb(rd_wb), .wr_data_wb(wb_out),
+                .wr_en_wb(reg_write && (rd_wb != 0)), .rd1(rs1_raw), .rd2(rs2_raw));
+    pipeline_reg #(.WIDTH(32)) id_ex_rs1 (.clk, .rst_n, .en(en_id_ex), .flush(flush_ex), .d(rs1_id), .q());
+    pipeline_reg #(.WIDTH(32)) id_ex_rs2 (.clk, .rst_n, .en(en_id_ex), .flush(flush_ex), .d(rs2_id), .q());
+    pipeline_reg #(.WIDTH(32)) id_ex_rd (.clk, .rst_n, .en(en_id_ex), .flush(flush_ex), .d(rd_ex), .q(rd_ex));
+    pipeline_reg #(.WIDTH(32)) id_ex_imm (.clk, .rst_n, .en(en_id_ex), .flush(flush_ex), .d(imm_id), .q(imm_id));
+    pipeline_reg #(.WIDTH(4)) id_ex_aluop (.clk, .rst_n, .en(en_id_ex), .flush(flush_ex), .d(alu_op_id), .q(alu_op_id));
+    assign rs1_ex = (fwd_rs1 == 1) ? alu_out_ex : (fwd_rs1 == 2) ? mem_out_ex : rs1_raw;
+    assign rs2_ex = (fwd_rs2 == 1) ? alu_out_ex : (fwd_rs2 == 2) ? mem_out_ex : rs2_raw;
+    alu alu (.a(rs1_ex), .b(imm_id), .alu_op(alu_op_id), .result(alu_out_ex));
+    pipeline_reg #(.WIDTH(32)) ex_mem_alu (.clk, .rst_n, .en(1'b1), .flush(flush_ex), .d(alu_out_ex), .q(mem_out_ex));
+    tlb #(.VA_W(VA_W), .PA_W(PA_W)) dtlb (.clk, .rst_n, .req(mem_write||mem_read_ex), .vaddr(mem_out_ex), .paddr(paddr_d), .hit(dtlb_hit), .refill_valid(dtlb_refill_vld));
+    assign tlb_miss_d = (mem_write||mem_read_ex) && ~dtlb_hit;
+    cache #(.ADDR_W(PA_W), .DATA_W(32)) dcache (.clk, .rst_n, .req(mem_write||mem_read_ex), .wr_en(mem_write), .addr(paddr_d), .rd_data(dcache_rdata), .hit(dcache_hit), .refill_valid(dcache_refill_vld));
+    assign cache_miss_d = (mem_write||mem_read_ex) && ~dcache_hit;
+    assign wb_data = mem_read_ex ? dcache_rdata : mem_out_ex;
+    pipeline_reg #(.WIDTH(32)) mem_wb_data (.clk, .rst_n, .en(1'b1), .flush(flush_mem), .d(wb_data), .q(wb_out));
+    pipeline_reg #(.WIDTH(5)) mem_wb_rd (.clk, .rst_n, .en(1'b1), .flush(flush_mem), .d(rd_wb), .q(rd_wb));
+    hazard_unit hu (.rs1_id, .rs2_id, .rd_ex, .rd_mem, .rd_wb, .mem_read_ex,
+                    .tlb_miss_i, .cache_miss_i, .tlb_miss_d, .cache_miss_d,
+                    .branch_mispredict(1'b0), .exception_taken(1'b0),
+                    .m_busy, .a_busy,
+                    .stall_if, .stall_id, .stall_ex(1'b0), .stall_mem(1'b0),
+                    .flush_ex, .flush_mem, .fwd_rs1, .fwd_rs2);
+    mem_ctrl mc (.clk, .rst_n, .miss_i(tlb_miss_i|cache_miss_i), .miss_d(tlb_miss_d|cache_miss_d),
+                 .vaddr_i(pc_if), .vaddr_d(mem_out_ex),
+                 .refill_done_i(itlb_refill_vld|icache_refill_vld), .refill_data_i(icache_refill_data),
+                 .refill_done_d(dtlb_refill_vld|dcache_refill_vld), .refill_data_d(dcache_refill_data),
+                 .mem_addr, .mem_wdata, .mem_req, .mem_we, .mem_rdata, .mem_ready);
+endmodule
