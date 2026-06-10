@@ -12,24 +12,25 @@ module cache #(parameter ADDR_W = 32, DATA_W = 32, LINE_SIZE = 32, NUM_LINES = 1
     localparam IDX_W = $clog2(NUM_LINES);
     localparam TAG_W = ADDR_W - IDX_W - OFFSET_W;
     
-    logic valid [NUM_LINES];
-    logic [TAG_W-1:0] tags [NUM_LINES];
-    logic [LINE_SIZE-1:0] data [NUM_LINES];
+    logic valid [0:NUM_LINES-1];
+    logic [TAG_W-1:0] tags [0:NUM_LINES-1];
+    logic [LINE_SIZE-1:0] data [0:NUM_LINES-1];
     
     wire [IDX_W-1:0] idx = addr[OFFSET_W +: IDX_W];
     wire [TAG_W-1:0] tag = addr[IDX_W +: TAG_W];
-    wire [OFFSET_W-2:0] word_off = addr[OFFSET_W-1:2];
+    wire [OFFSET_W-3:0] word_off = addr[OFFSET_W-1:2];
     wire tag_match = tags[idx] == tag;
     
     assign hit = req && valid[idx] && tag_match;
     assign rd_data = hit ? data[idx][word_off*DATA_W +: DATA_W] : '0;
     
+    // FIXED: Use non-blocking (<=)
     always_ff @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            for (int i=0; i<NUM_LINES; i=i+1) begin // Blocking = for loop init
-                valid[i] = 0;
-                tags[i] = 0;
-                data[i] = '0;
+            for (int i=0; i<NUM_LINES; i=i+1) begin
+                valid[i] <= 0;
+                tags[i] <= 0;
+                data[i] <= '0;
             end
         end else if (refill_valid) begin
             valid[idx] <= 1; tags[idx] <= tag; data[idx] <= refill_data;

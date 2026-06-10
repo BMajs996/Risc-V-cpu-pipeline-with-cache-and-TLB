@@ -3,26 +3,29 @@ TOP       = riscv_cpu_tb
 TB        = tb/riscv_cpu_tb.sv
 SRC       = $(wildcard src/*.sv)
 OBJ_DIR   = obj_dir
+VCD       = $(OBJ_DIR)/V$(TOP).vcd
+GTKWAVE_ENV = env -u SNAP -u SNAP_ARCH -u SNAP_INSTANCE_NAME -u SNAP_NAME \
+	-u SNAP_REVISION -u SNAP_LIBRARY_PATH -u LD_LIBRARY_PATH \
+	-u GTK_PATH -u GIO_MODULE_DIR
 
-.PHONY: all sim clean
+.PHONY: all sim wave clean
 
 all: sim
 
 sim: $(OBJ_DIR)/V$(TOP)
 	@mkdir -p sim
-	@./$(OBJ_DIR)/V$(TOP) +trace
-	@VCD=$$(find $(OBJ_DIR) -name "*.vcd" -type f 2>/dev/null | head -1); \
-	if [ -z "$$VCD" ]; then \
-		echo "⚠️ No VCD generated. Check +trace flag."; \
-	else \
-		echo "✅ Traces saved to $$VCD"; \
-		echo "🖥️ Opening GTKWave..."; \
-		gtkwave $$VCD & \
-	fi
+	@echo "🚀 Running simulation..."
+	@$(OBJ_DIR)/V$(TOP)
+	@echo ""
+	@echo "✅ Simulation finished. Waveform: $(VCD)"
+
+wave: $(VCD)
+	$(GTKWAVE_ENV) gtkwave $(VCD) &
 
 $(OBJ_DIR)/V$(TOP): $(SRC) $(TB)
 	@mkdir -p $(OBJ_DIR)
-	$(VERILATOR) --sv --cc --exe --main --trace --top-module $(TOP) \
+	$(VERILATOR) --sv --timing --cc --exe --main --trace --top-module $(TOP) \
+		--converge-limit 50000 \
 		-Wno-fatal -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE -Wno-PINMISSING \
 		-Wno-IMPLICIT -Wno-WIDTH -Wno-STMTDLY -Wno-UNSIGNED -Wno-INFINITELOOP \
 		-Wno-BLKANDNBLK -Wno-BLKLOOPINIT -Wno-MULTIDRIVEN \
@@ -30,4 +33,4 @@ $(OBJ_DIR)/V$(TOP): $(SRC) $(TB)
 	@make -j$(nproc) -C $(OBJ_DIR) -f V$(TOP).mk VM_PARALLEL_BUILDS=1
 
 clean:
-	rm -rf $(OBJ_DIR) sim/*.vcd dump.vcd
+	rm -rf $(OBJ_DIR) sim/*.vcd

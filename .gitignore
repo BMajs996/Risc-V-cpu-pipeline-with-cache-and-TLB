@@ -1,0 +1,24 @@
+# Verilator build artifacts
+obj_dir/
+*.vcd
+*.fst
+*.vpd
+
+# Simulation logs
+*.log
+*.out
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor backups
+*~
+*.swp
+*.swo
+
+# Synthesis outputs (add later if needed)
+synth/
+implementation/
+*.bit
+*.bin
